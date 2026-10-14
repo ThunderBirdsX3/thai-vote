@@ -5,7 +5,7 @@
 ## ความต้องการ
 
 - Docker และ Docker Compose (สำหรับรันแบบเต็มระบบ)
-- สำหรับพัฒนา: Go 1.26+, Node 24+
+- สำหรับพัฒนา: Go 1.26+, [Bun](https://bun.sh) 1.3+
 
 ## รันด้วย Docker (แนะนำ)
 
@@ -14,10 +14,10 @@ cp .env.example .env        # แล้วแก้ค่าลับในไ�
 docker compose up -d --build
 ```
 
-สร้างบัญชี admin คนแรก (รหัสผ่านอย่างน้อย 10 ตัวอักษร)
+สร้างบัญชี admin คนแรก
 
 ```bash
-printf 'รหัสผ่านของคุณ\n' | docker compose exec -T api /app/api create-admin admin "ชื่อที่แสดง"
+bin/create-admin admin "ชื่อที่แสดง"      # ถามรหัสผ่านตอนรัน
 ```
 
 เปิดใช้งาน
@@ -27,7 +27,8 @@ printf 'รหัสผ่านของคุณ\n' | docker compose exec -T a
 คำสั่งที่ใช้บ่อย
 
 ```bash
-docker compose logs -f api     # ดู log ของ API
+bin/logs                       # ดู log ของ API (bin/logs web สำหรับ nginx)
+bin/psql                       # เข้า psql ของฐานข้อมูล (ไม่ต้องเปิดพอร์ต)
 docker compose down            # หยุดระบบ (ข้อมูลยังอยู่)
 docker compose down -v         # หยุดและลบข้อมูลทั้งหมด
 ```
@@ -43,6 +44,10 @@ docker compose down -v         # หยุดและลบข้อมูล�
 | `COOKIE_SECURE` | `true` เมื่อใช้ HTTPS |
 
 ## รันแบบพัฒนา
+
+โหมดนี้ใช้พอร์ต `8080` (backend) และ `5173` (frontend) ซึ่งชนกับ stack Docker ด้านบน ให้หยุดก่อนด้วย `docker compose down`
+
+backend และ frontend รันค้างใน terminal ของตัวเอง จึงต้องเปิด terminal แยกสำหรับแต่ละขั้นตอนด้านล่าง
 
 เริ่มฐานข้อมูล
 
@@ -68,8 +73,8 @@ DATABASE_URL='postgres://thaivote:thaivote@localhost:55432/thaivote?sslmode=disa
 
 ```bash
 cd frontend
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 ตอนพัฒนา ค่าเริ่มต้น `APP_ORIGIN` คือ `http://localhost:5173` ตรงกับ Vite อยู่แล้ว
@@ -81,7 +86,7 @@ Test ใช้ฐานข้อมูล `thaivote_test` ที่ `localhost:5
 ```bash
 docker exec tv-db createdb -U thaivote thaivote_test
 cd backend && go test ./...
-cd ../frontend && npm run build      # รวมการตรวจชนิดข้อมูลด้วย vue-tsc
+cd ../frontend && bun run build      # รวมการตรวจชนิดข้อมูลด้วย vue-tsc
 ```
 
 ## ก่อนนำไปใช้งานจริง

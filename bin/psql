@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Usage: bin/psql [psql args]   e.g. bin/psql -c "select username from admins"
+cd "$(dirname "$0")/.."
+exec docker compose exec db psql -U thaivote "$@"

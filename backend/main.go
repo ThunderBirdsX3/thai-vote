@@ -245,8 +245,8 @@ func (a *app) cliCreateAdmin(ctx context.Context, args []string) error {
 	fmt.Fprint(os.Stderr, "password: ")
 	pw, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	pw = strings.TrimRight(pw, "\r\n")
-	if len(pw) < 10 {
-		return fmt.Errorf("password must be at least 10 characters")
+	if len(pw) < 1 {
+		return fmt.Errorf("password must not be empty")
 	}
 	hash, err := hashPassword(pw)
 	if err != nil {

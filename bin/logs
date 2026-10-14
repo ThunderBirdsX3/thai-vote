@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Usage: bin/logs [service]   (default: api)
+cd "$(dirname "$0")/.."
+exec docker compose logs -f "${1:-api}"
