@@ -1,56 +1,162 @@
 # โหวตไทย (Thai Vote)
 
-Voting and opinion site. Go API + Vue 3 frontend + PostgreSQL. Light theme, Thai UI.
+ระบบโหวตและรับฟังความเห็น ผู้ใช้เข้าสู่ระบบด้วย ThaiID แล้วโหวตในแบบที่ผู้ดูแลระบบ (admin) สร้างไว้ เน้นความน่าเชื่อถือ: หนึ่งคนหนึ่งเสียง ตรวจสอบย้อนหลังได้ และแก้ผลลับหลังไม่ได้
 
-- Voters log in with ThaiID. **Real ThaiID is not connected yet**: with `MOCK_THAIID=true` the login page lets you pick any identity.
-- Admins (separate `admins` table, password login) create polls with a start and end time.
-- Poll kinds: single choice, multi choice (max N), approve / disapprove / abstain, free-text comment.
-- Per poll, admin chooses: anonymous or named voters; results live or only after close.
+วิธีติดตั้งและรันระบบอยู่ที่ [RUNNING.md](RUNNING.md)
 
-## Run (Docker)
+## ภาพรวม
 
-```bash
-cp .env.example .env        # edit secrets
-docker compose up -d --build
-printf 'your-admin-password\n' | docker compose exec -T api /app/api create-admin admin "Admin name"
+| ส่วน | เทคโนโลยี | หน้าที่ |
+|---|---|---|
+| Backend | Go (`net/http`, pgx) | API, กติกาการโหวต, session, migration |
+| Frontend | Vue 3 + Vite + Tailwind | หน้าผู้โหวตและหน้า admin (ธีมสว่างอย่างเดียว ภาษาไทย) |
+| Database | PostgreSQL | เก็บข้อมูลทั้งหมด และบังคับกติกาสำคัญด้วย constraint/trigger |
+| Web server | nginx | เสิร์ฟ frontend, proxy `/api` ไป backend, ใส่ security header |
+
+Admin และผู้โหวตเป็นคนละตาราง (`admins`, `voters`) คนละ cookie และคนละชุด API
+
+## ผู้ใช้สองกลุ่ม
+
+**ผู้โหวต**
+1. เข้าสู่ระบบด้วย ThaiID (ตอนนี้เป็นโหมดจำลอง เลือกตัวตนใดก็ได้)
+2. ดูรายการแบบโหวต แยกแท็บ เปิดอยู่ / เร็วๆ นี้ / ปิดแล้ว
+3. เลือกคำตอบหรือพิมพ์ความเห็น แล้วตรวจทานก่อนกดยืนยัน (ส่งแล้วแก้ไม่ได้)
+4. ได้รหัสใบรับรอง (receipt) แสดงครั้งเดียว ใช้ตรวจที่หน้า `/verify` ว่าบัตรของตนอยู่ในระบบ
+5. ดูผลโหวตตามที่ admin ตั้งไว้
+
+**Admin**
+1. เข้าสู่ระบบด้วย username และรหัสผ่าน
+2. สร้างแบบโหวตเป็นร่าง ตั้งหัวข้อ รูปแบบ ตัวเลือก วันเริ่ม และวันสิ้นสุด
+3. เผยแพร่ แล้วระบบเปิดและปิดโหวตตามเวลาโดยอัตโนมัติ
+4. ดูผล ตรวจความถูกต้องของบัตร ซ่อนความเห็นที่ไม่เหมาะสม ปิดโหวตก่อนกำหนดได้
+5. ดูบันทึกการใช้งานของ admin ทุกคน
+
+## แบบโหวต
+
+**รูปแบบ**
+- `single` เลือก 1 ข้อ
+- `multi` เลือกได้หลายข้อ ไม่เกินจำนวนที่กำหนด
+- `approve` เห็นด้วย / ไม่เห็นด้วย / งดออกเสียง (ระบบสร้างตัวเลือกให้)
+- `comment` พิมพ์ความเห็นอย่างเดียว (1–2,000 ตัวอักษร)
+
+**ตั้งค่าต่อแบบโหวต**
+- ความเป็นส่วนตัว: *ไม่ระบุตัวตน* (ไม่รู้ว่าใครเลือกอะไร) หรือ *เปิดเผยชื่อ* (ทุกคนเห็นชื่อและคำตอบ)
+- การแสดงผล: *แสดงสด* หรือ *แสดงเมื่อปิดโหวต* (กันผลที่เห็นอยู่ชักนำคนที่ยังไม่โหวต)
+
+**วงจรสถานะ** คำนวณจากเวลาของฐานข้อมูล ไม่มีงานเบื้องหลังที่ต้องรอ
+
+```
+ร่าง (draft) --เผยแพร่--> เร็วๆ นี้ (upcoming) --ถึงเวลาเริ่ม--> เปิดโหวต (open) --ถึงเวลาสิ้นสุด หรือ admin ปิดก่อน--> ปิดแล้ว (closed)
 ```
 
-Open http://localhost:8080 (voters) and http://localhost:8080/admin/login (admins). Admin password: 10+ characters.
+- แก้ไขได้เฉพาะสถานะ draft และ upcoming
+- ลบได้เฉพาะ draft ที่ไม่เคยเผยแพร่
+- ปิดก่อนกำหนดได้เฉพาะแบบที่เปิดอยู่ และย้อนกลับไม่ได้
 
-## Run (development)
+## ขั้นตอนเมื่อกดโหวต
 
-```bash
-docker run -d --name tv-db -e POSTGRES_USER=thaivote -e POSTGRES_PASSWORD=thaivote -e POSTGRES_DB=thaivote -p 55432:5432 postgres:16-alpine
-cd backend && DATABASE_URL='postgres://thaivote:thaivote@localhost:55432/thaivote?sslmode=disable' MOCK_THAIID=true go run .
-cd frontend && npm install && npm run dev      # http://localhost:5173, proxies /api to :8080
-```
+ทุกอย่างเกิดใน transaction เดียว ถ้าขั้นใดล้มเหลวจะไม่มีอะไรถูกบันทึก
 
-Tests (need a Postgres; defaults to `localhost:55432/thaivote_test`, override with `TEST_DATABASE_URL`):
-`cd backend && go test ./...` — tests truncate that database, never point it at real data.
+1. ตรวจ session ของผู้โหวต
+2. ล็อกแถว poll (`FOR UPDATE`) เพื่อให้การโหวตของ poll เดียวกันเรียงลำดับกัน
+3. ตรวจสถานะต้องเป็น `open` โดยใช้เวลาของฐานข้อมูล
+4. ตรวจคำตอบตามรูปแบบ: จำนวนตัวเลือก, ตัวเลือกต้องเป็นของ poll นี้, ไม่ซ้ำ, ความเห็นมีหรือไม่มีตามรูปแบบ
+5. บันทึก `participations (poll_id, voter_id)` ถ้าเคยโหวตแล้ว primary key ชนและได้ 409
+6. คำนวณ `hash` ของบัตร = SHA-256 ต่อจากบัตรก่อนหน้า (รายละเอียดด้านล่าง)
+7. บันทึก `ballots` และ `ballot_choices`
+8. คืนรหัส receipt ให้ผู้โหวต (เก็บเฉพาะ hash ของรหัส)
 
-## How trust is enforced
+## ความน่าเชื่อถือและความปลอดภัย
 
-| Guarantee | Mechanism |
+| สิ่งที่รับประกัน | วิธีทำ |
 |---|---|
-| One person, one vote | `participations` primary key `(poll_id, voter_id)`, inserted in the same transaction as the ballot |
-| Votes only inside the window | Status computed from the database clock inside the vote transaction |
-| Anonymous ballots | Ballot has no `voter_id` and no timestamp; participation has no timestamp; anonymous results are tally-only (comments are shuffled) |
-| Ballots can't be changed quietly | Triggers reject UPDATE/DELETE on ballots, choices, participations; per-poll SHA-256 hash chain; admin "verify" recomputes it |
-| Voter can check their vote | One-time receipt code; only its hash is stored; `/verify` confirms inclusion without revealing the choice |
-| Polls can't be changed after start | API rejects edits once started; only an open poll can be closed early; only unpublished drafts can be deleted |
-| No raw citizen IDs | Stored as HMAC-SHA256 with `ID_PEPPER`, plus a masked form for display |
-| Sessions and CSRF | Random tokens (only hashes stored), HttpOnly SameSite=Lax cookies, `Origin` must equal `APP_ORIGIN` |
-| Admin accounts | Argon2id, rate-limited login, audit log of every admin action |
+| หนึ่งคนหนึ่งเสียง | primary key `(poll_id, voter_id)` ใน `participations` บันทึกใน transaction เดียวกับบัตร |
+| โหวตได้เฉพาะในช่วงเวลา | คำนวณสถานะด้วย `now()` ของฐานข้อมูลภายใน transaction ที่โหวต |
+| ไม่ระบุตัวตนจริง | บัตรไม่มี `voter_id` และไม่มีเวลา, `participations` ไม่มีเวลา, ผลแบบ anonymous แสดงเฉพาะยอดรวมและความเห็นที่สลับลำดับแล้ว |
+| แก้บัตรลับหลังไม่ได้ | trigger ปฏิเสธ UPDATE/DELETE บน `ballots`, `ballot_choices`, `participations` |
+| ตรวจจับการแก้ไขได้ | hash chain ต่อ poll (ดูด้านล่าง) |
+| ผู้โหวตตรวจบัตรตนเองได้ | receipt 26 ตัวอักษร เก็บเฉพาะ hash ตรวจที่ `/verify` ได้แค่ว่าบัตรอยู่ในระบบ ไม่บอกว่าเลือกอะไร (กันการพิสูจน์คะแนนให้คนซื้อเสียง) |
+| แบบโหวตแก้ไม่ได้หลังเริ่ม | API ปฏิเสธการแก้เมื่อสถานะเป็น open หรือ closed |
+| ไม่เก็บเลขบัตรประชาชน | เก็บ HMAC-SHA256 ด้วยค่าลับ `ID_PEPPER` และเลขแบบปิดบังสำหรับแสดงผล |
+| Session | token สุ่ม 32 ไบต์ เก็บเฉพาะ hash ใน DB, cookie เป็น HttpOnly + SameSite=Lax (+ Secure ใน production), voter 24 ชม., admin 8 ชม. |
+| CSRF | request ที่เปลี่ยนข้อมูลต้องมี `Origin` ตรงกับ `APP_ORIGIN` |
+| รหัสผ่าน admin | argon2id, เวลาตรวจเท่ากันแม้ไม่พบ username |
+| เดารหัส/ยิงถี่ | rate limit ต่อ IP ที่ login, โหวต และตรวจ receipt |
+| ตรวจย้อนหลังการกระทำ admin | `audit_log` บันทึกทุกการกระทำ (login, สร้าง/แก้/เผยแพร่/ปิด/ลบ, ตรวจบัตร, ซ่อนความเห็น) |
+| Header | nginx ตั้ง CSP, `X-Frame-Options: DENY`, `nosniff` |
 
-Known limits (by design for a first version):
-- Someone with raw database write access can bypass the triggers. The hash chain detects this only if the head hash was recorded elsewhere (it is shown on the results page; save it).
-- Anonymity holds against app users and admins, not against someone who can read physical storage or WAL.
-- Rate limiting is in memory, per API instance.
+### Hash chain
 
-## Connecting real ThaiID later
+บัตรแต่ละใบมี `seq` (1, 2, 3, …) และ `hash = SHA-256(hash ก่อนหน้า, poll id, seq, voter id, ตัวเลือกที่เลือก, ความเห็น, hash ของ receipt)` บัตรใบแรกใช้ค่าเริ่มต้นเป็น 32 ไบต์ศูนย์
 
-Add an OIDC callback in `backend/auth.go` that verifies the ThaiID response and calls `loginVoter(ctx, w, citizenID, name)`. Then set `MOCK_THAIID=false`.
+ถ้ามีใครแก้เนื้อหา ลบ หรือแทรกบัตร ค่า hash จะไม่ต่อกัน ปุ่ม "ตรวจสอบความถูกต้องของบัตร" ของ admin คำนวณใหม่ทั้งสายและตรวจว่า
 
-## Production checklist
+- `seq` ต่อเนื่อง ไม่ขาด
+- เนื้อหาแต่ละบัตรตรงกับ hash
+- จำนวนบัตรเท่ากับจำนวนคนที่โหวต
 
-Serve over HTTPS and set `COOKIE_SECURE=true`, set a strong `ID_PEPPER` and `POSTGRES_PASSWORD`, set `APP_ORIGIN` to the public URL, set `MOCK_THAIID=false`, back up the database.
+หน้าผลโหวตแสดง hash ของบัตรใบล่าสุด (head hash) ควรมีคนจดไว้ภายนอกเมื่อปิดโหวต เพื่อใช้เทียบภายหลัง
+
+### การซ่อนความเห็น
+
+Admin ซ่อนความเห็นได้ โดยไม่แก้บัตร ระบบเพิ่มแถวใน `comment_hidden` พร้อมเหตุผล และบันทึกใน audit log ผู้ใช้ทั่วไปจะไม่เห็นความเห็นนั้น (แบบเปิดเผยชื่อจะเห็นว่าความเห็นถูกซ่อน)
+
+## ฐานข้อมูล
+
+| ตาราง | เก็บอะไร |
+|---|---|
+| `admins` | บัญชี admin (username, argon2id hash) |
+| `voters` | ผู้โหวต: hash ของเลขบัตร, เลขแบบปิดบัง, ชื่อที่แสดง |
+| `sessions` | session ของทั้งสองกลุ่ม (เก็บ hash ของ token, ชนิด, หมดอายุ) |
+| `polls`, `poll_options` | แบบโหวตและตัวเลือก |
+| `participations` | ใครโหวตใน poll ไหนแล้ว (ไม่เชื่อมกับบัตรใน poll แบบไม่ระบุตัวตน) |
+| `ballots`, `ballot_choices` | บัตรโหวต, hash chain, ตัวเลือกที่เลือก (append-only) |
+| `comment_hidden` | ความเห็นที่ admin ซ่อน |
+| `audit_log` | บันทึกการกระทำของ admin |
+
+Migration อยู่ที่ [backend/migrations/](backend/migrations/) และรันอัตโนมัติเมื่อ API เริ่มทำงาน
+
+## API
+
+ผู้โหวต
+- `POST /api/auth/mock-thaiid`, `POST /api/auth/logout`, `GET /api/me`
+- `GET /api/polls`, `GET /api/polls/{id}`
+- `POST /api/polls/{id}/vote`
+- `GET /api/polls/{id}/results` (ตามการตั้งค่าการแสดงผลของ poll)
+- `GET /api/receipts/{code}`
+
+Admin (ต้องมี cookie admin)
+- `POST /api/admin/login`, `POST /api/admin/logout`, `GET /api/admin/me`
+- `GET/POST /api/admin/polls`, `GET/PUT/DELETE /api/admin/polls/{id}`
+- `POST /api/admin/polls/{id}/publish`, `POST /api/admin/polls/{id}/close`
+- `GET /api/admin/polls/{id}/results` (ดูได้เสมอ), `GET /api/admin/polls/{id}/verify`
+- `POST /api/admin/ballots/{id}/hide`
+- `GET /api/admin/audit-log`
+
+## โครงสร้างโปรเจกต์
+
+```
+backend/    Go API
+  main.go     config, routes, middleware (origin check, rate limit)
+  auth.go     session, argon2id, ThaiID mock, loginVoter()
+  polls.go    แบบโหวต: validate, สถานะ, หน้าที่ของ admin
+  vote.go     โหวต, hash chain, receipt, ผลโหวต, verify
+  migrations/ SQL schema
+  vote_test.go
+frontend/   Vue 3 + Vite
+  src/views/        หน้าผู้โหวต และ admin/ สำหรับ admin
+  src/components/   StatusBadge, ResultBars
+docs/superpowers/specs/   เอกสารออกแบบ
+```
+
+## การเข้าสู่ระบบด้วย ThaiID
+
+ตอนนี้ ThaiID จริงยังไม่เชื่อมต่อ เมื่อ `MOCK_THAIID=true` หน้า login ให้เลือกหรือกรอกตัวตนใดก็ได้ที่เลขบัตรผ่านการตรวจ checksum ทุกเส้นทางที่ยืนยันตัวตนผู้โหวตผ่านฟังก์ชัน `loginVoter(ctx, w, citizenID, name)` ใน [backend/auth.go](backend/auth.go) ที่เดียว เมื่อมี ThaiID จริง ให้เพิ่ม OIDC callback ที่ตรวจผลจาก ThaiID แล้วเรียกฟังก์ชันนี้ จากนั้นตั้ง `MOCK_THAIID=false` ส่วนอื่นของระบบไม่ต้องแก้
+
+## ข้อจำกัดที่ควรรู้
+
+- ผู้ที่เขียนฐานข้อมูลได้โดยตรง (เช่น DBA) ปิด trigger ได้ hash chain จะจับได้ก็ต่อเมื่อมีการจด head hash ไว้ภายนอก
+- ความเป็นนิรนามใช้ได้กับผู้ใช้และ admin ผ่านแอป แต่ไม่ครอบคลุมผู้ที่อ่านไฟล์ฐานข้อมูลหรือ WAL ได้โดยตรง
+- Rate limit เก็บในหน่วยความจำของแต่ละ instance
+- โหวตของ poll เดียวกันถูกจัดคิวด้วยการล็อกแถว poll เหมาะกับงานระดับร้อยถึงหลักพันคนต่อวินาที ไม่ใช่ระดับประเทศ
+- ผู้โหวตหนึ่งคนมีสิทธิ์โหวตทุก poll ยังไม่มีรายชื่อผู้มีสิทธิ์ต่อ poll, 2FA ของ admin หรือการแจ้งเตือนทางอีเมล
