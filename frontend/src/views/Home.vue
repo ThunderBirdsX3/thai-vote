@@ -1,27 +1,44 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { api, type Poll, type Status } from '../api'
+import { api, type Poll, type PollPage, type Status } from '../api'
 import { fmtDate, kindLabel, plainText, timeLeft } from '../format'
 import StatusBadge from '../components/StatusBadge.vue'
 import ApproveResults from '../components/ApproveResults.vue'
 import ResultBars from '../components/ResultBars.vue'
+import Pager from '../components/Pager.vue'
 
-const polls = ref<Poll[]>([])
+const shown = ref<Poll[]>([])
+const counts = ref<Record<Status, number>>({ draft: 0, upcoming: 0, open: 0, closed: 0 })
 const loading = ref(true)
 const error = ref('')
 const tab = ref<Status>('open')
+const page = ref(1)
+const perPage = 10
 
-onMounted(async () => {
+async function load() {
+  loading.value = true
   try {
-    polls.value = await api.get<Poll[]>('/polls')
-    if (!polls.value.some((p) => p.status === 'open')) {
-      tab.value = polls.value.some((p) => p.status === 'upcoming') ? 'upcoming' : 'closed'
-    }
+    const r = await api.get<PollPage>(`/polls?status=${tab.value}&page=${page.value}&per_page=${perPage}`)
+    shown.value = r.items
+    counts.value = r.counts
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     loading.value = false
+  }
+}
+
+function pick(t: Status) {
+  tab.value = t
+  page.value = 1
+  load()
+}
+
+onMounted(async () => {
+  await load()
+  if (!error.value && !counts.value.open) {
+    pick(counts.value.upcoming ? 'upcoming' : 'closed')
   }
 })
 
@@ -30,8 +47,7 @@ const tabs: { key: Status; label: string }[] = [
   { key: 'upcoming', label: 'เร็วๆ นี้' },
   { key: 'closed', label: 'ปิดแล้ว' },
 ]
-const count = (s: Status) => polls.value.filter((p) => p.status === s).length
-const shown = computed(() => polls.value.filter((p) => p.status === tab.value))
+const count = (s: Status) => counts.value[s]
 const top3 = (p: Poll) => [...p.options].sort((a, b) => b.count - a.count).slice(0, 3)
 const stripe: Record<string, string> = {
   open: 'var(--color-yes)',
@@ -57,7 +73,7 @@ const stripe: Record<string, string> = {
       :aria-selected="tab === t.key"
       class="-mb-px cursor-pointer border-b-2 px-4 py-2.5 text-[15px] transition-colors"
       :class="tab === t.key ? 'border-brand font-semibold text-ink' : 'border-transparent text-muted hover:text-ink'"
-      @click="tab = t.key"
+      @click="pick(t.key)"
     >
       {{ t.label }}
       <span class="ml-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs text-brand">{{ count(t.key) }}</span>
@@ -115,4 +131,5 @@ const stripe: Record<string, string> = {
       </RouterLink>
     </li>
   </ul>
+  <Pager v-if="!loading && !error" v-model:page="page" :per-page="perPage" :total="count(tab)" @update:page="load" />
 </template>

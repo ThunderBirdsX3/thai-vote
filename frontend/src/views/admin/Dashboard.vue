@@ -1,23 +1,33 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { api, type Poll } from '../../api'
+import { api, type Poll, type PollPage } from '../../api'
 import { fmtDate, kindLabel } from '../../format'
 import StatusBadge from '../../components/StatusBadge.vue'
+import Pager from '../../components/Pager.vue'
 
 const polls = ref<Poll[]>([])
 const loading = ref(true)
 const error = ref('')
 
-onMounted(async () => {
+const page = ref(1)
+const total = ref(0)
+const perPage = 10
+
+async function load() {
+  loading.value = true
   try {
-    polls.value = await api.get<Poll[]>('/admin/polls')
+    const r = await api.get<PollPage>(`/admin/polls?page=${page.value}&per_page=${perPage}`)
+    polls.value = r.items
+    total.value = r.total
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(load)
 </script>
 
 <template>
@@ -55,4 +65,5 @@ onMounted(async () => {
       </tbody>
     </table>
   </div>
+  <Pager v-if="!loading && !error" v-model:page="page" :per-page="perPage" :total="total" @update:page="load" />
 </template>

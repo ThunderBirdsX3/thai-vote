@@ -118,7 +118,7 @@ Migration อยู่ที่ [backend/migrations/](../backend/migrations/) �
 
 ผู้โหวต
 - `POST /api/auth/mock-thaiid`, `POST /api/auth/logout`, `GET /api/me`
-- `GET /api/polls`, `GET /api/polls/{id}`
+- `GET /api/polls?status=&page=&per_page=` (แบ่งหน้า คืน `{items,total,page,per_page,counts}`), `GET /api/polls/{id}`
 - `POST /api/polls/{id}/vote`
 - `GET /api/polls/{id}/results` (ตามการตั้งค่าการแสดงผลของ poll)
 - `GET /api/receipts/{code}`

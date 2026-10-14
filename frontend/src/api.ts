@@ -55,6 +55,13 @@ export interface Poll {
   has_voted: boolean
   ballot_count: number
 }
+export interface PollPage {
+  items: Poll[]
+  total: number
+  page: number
+  per_page: number
+  counts: Record<Status, number>
+}
 export type OptionResult = Option
 export interface BallotOut {
   id?: string

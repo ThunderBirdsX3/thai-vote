@@ -125,10 +125,10 @@ func TestListShowsTalliesOnlyWhenVisible(t *testing.T) {
 		want(t, e.vote(p.ID, e.voter(1), answers(p, "เห็นด้วย"), ""), 201)
 	}
 
-	var list []pollOut
+	var list pollPage
 	e.decode(e.do("GET", "/api/polls", nil, nil), &list)
 	got := map[string]pollOut{}
-	for _, p := range list {
+	for _, p := range list.Items {
 		got[p.ID] = p
 	}
 	sum := func(p pollOut) (n int) {
@@ -154,6 +154,23 @@ func TestListShowsTalliesOnlyWhenVisible(t *testing.T) {
 	if !one.ResultsVisible || sum(one) != 1 {
 		t.Fatalf("closed poll shows tallies: %+v", one)
 	}
+}
+
+func TestListPagination(t *testing.T) {
+	e := setup(t)
+	for i := 0; i < 3; i++ {
+		e.pollWith(pollSpec{}, true)
+	}
+	var pg pollPage
+	e.decode(e.do("GET", "/api/polls?status=open&per_page=2&page=2", nil, nil), &pg)
+	if pg.Total != 3 || len(pg.Items) != 1 || pg.Counts["open"] != 3 || pg.Page != 2 {
+		t.Fatalf("page 2 of 3 open polls at 2/page: %+v", pg)
+	}
+	e.decode(e.do("GET", "/api/polls?status=closed", nil, nil), &pg)
+	if pg.Total != 0 || len(pg.Items) != 0 || pg.Counts["open"] != 3 {
+		t.Fatalf("closed filter: %+v", pg)
+	}
+	want(t, e.do("GET", "/api/polls?status=draft%27", nil, nil), 400)
 }
 
 func TestDescriptionSanitized(t *testing.T) {

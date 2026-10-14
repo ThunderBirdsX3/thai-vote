@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -182,16 +183,73 @@ func (a *app) loadPolls(ctx context.Context, where string, voterID string, admin
 	return polls, nil
 }
 
-const orderSQL = ` ORDER BY CASE WHEN ` + statusSQL + ` = 'open' THEN 0 WHEN ` + statusSQL + ` = 'upcoming' THEN 1 WHEN ` + statusSQL + ` = 'draft' THEN 2 ELSE 3 END, p.ends_at DESC`
+const orderSQL = ` ORDER BY CASE WHEN ` + statusSQL + ` = 'open' THEN 0 WHEN ` + statusSQL + ` = 'upcoming' THEN 1 WHEN ` + statusSQL + ` = 'draft' THEN 2 ELSE 3 END, p.ends_at DESC, p.id`
 
 // ---- voter-facing ----
 
+type pollPage struct {
+	Items   []pollOut      `json:"items"`
+	Total   int            `json:"total"` // matching the status filter
+	Page    int            `json:"page"`
+	PerPage int            `json:"per_page"`
+	Counts  map[string]int `json:"counts"` // per status, ignoring the status filter
+}
+
+// listPage serves a paginated poll list. base is the visibility WHERE clause;
+// query params: status (optional), page (from 1), per_page (default 10, max 50).
+func (a *app) listPage(r *http.Request, base, voterID string, admin bool) (pollPage, error) {
+	q := r.URL.Query()
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	per, _ := strconv.Atoi(q.Get("per_page"))
+	if per < 1 || per > 50 {
+		per = 10
+	}
+	rows, err := a.db.Query(r.Context(), `SELECT `+statusSQL+`, count(*) FROM polls p `+base+` GROUP BY 1`)
+	if err != nil {
+		return pollPage{}, err
+	}
+	defer rows.Close()
+	counts := map[string]int{"draft": 0, "upcoming": 0, "open": 0, "closed": 0}
+	total := 0
+	for rows.Next() {
+		var s string
+		var n int
+		if err := rows.Scan(&s, &n); err != nil {
+			return pollPage{}, err
+		}
+		counts[s] = n
+		total += n
+	}
+	if err := rows.Err(); err != nil {
+		return pollPage{}, err
+	}
+	where, args := base, []any{}
+	if s := q.Get("status"); s != "" {
+		n, ok := counts[s]
+		if !ok {
+			return pollPage{}, bad("invalid status")
+		}
+		where += ` AND ` + statusSQL + ` = $1`
+		args = append(args, s)
+		total = n
+	}
+	where += fmt.Sprintf("%s LIMIT %d OFFSET %d", orderSQL, per, (page-1)*per)
+	items, err := a.loadPolls(r.Context(), where, voterID, admin, args...)
+	if err != nil {
+		return pollPage{}, err
+	}
+	return pollPage{items, total, page, per, counts}, nil
+}
+
 func (a *app) handleListPolls(w http.ResponseWriter, r *http.Request) error {
-	polls, err := a.loadPolls(r.Context(), `WHERE p.published_at IS NOT NULL`+orderSQL, a.voterID(r), false)
+	out, err := a.listPage(r, `WHERE p.published_at IS NOT NULL`, a.voterID(r), false)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, polls)
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 
@@ -358,11 +416,11 @@ func insertChoices(ctx context.Context, tx pgx.Tx, pollID string, in pollIn, lab
 // ---- admin handlers ----
 
 func (a *app) handleAdminListPolls(w http.ResponseWriter, r *http.Request, _ string) error {
-	polls, err := a.loadPolls(r.Context(), orderSQL, "", true)
+	out, err := a.listPage(r, `WHERE true`, "", true)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, polls)
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 
