@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: thaivote
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thaivote}
+      POSTGRES_DB: thaivote
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thaivote"]
+      interval: 3s
+      retries: 20
+
+  api:
+    build: ./backend
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://thaivote:${POSTGRES_PASSWORD:-thaivote}@db:5432/thaivote?sslmode=disable
+      ID_PEPPER: ${ID_PEPPER:-dev-pepper-change-me}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
+      MOCK_THAIID: ${MOCK_THAIID:-true}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on: [api]
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

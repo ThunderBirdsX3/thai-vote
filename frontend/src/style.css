@@ -1,0 +1,176 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'IBM Plex Sans Thai', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: 'Noto Serif Thai', 'IBM Plex Sans Thai', serif;
+
+  --color-paper: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-ink: #161e3f;
+  --color-muted: #55607f;
+  --color-line: #e1e5ed;
+  --color-brand: #1f2a5c;
+  --color-brand-hover: #2a3978;
+  --color-brand-soft: #e9ecf8;
+  --color-stamp: #b0233a;
+  --color-stamp-soft: #fbe9ec;
+  --color-yes: #1e7b4f;
+  --color-yes-soft: #e4f3ec;
+  --color-amber: #92600a;
+  --color-amber-soft: #fbf0d9;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-paper font-sans text-ink antialiased;
+  line-height: 1.65;
+  min-height: 100vh;
+}
+
+h1,
+h2 {
+  font-family: var(--font-serif);
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 py-2 text-[15px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply border-brand bg-brand text-white hover:bg-brand-hover;
+  }
+  .btn-ghost {
+    @apply border-line bg-surface text-ink hover:bg-brand-soft;
+  }
+  .btn-danger {
+    @apply border-stamp bg-surface text-stamp hover:bg-stamp-soft;
+  }
+  .field {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-[15px] text-ink placeholder:text-muted/60;
+  }
+  .field:focus {
+    @apply border-brand outline-none;
+    box-shadow: 0 0 0 3px var(--color-brand-soft);
+  }
+  .label {
+    @apply mb-1 block text-sm font-medium text-ink;
+  }
+  .hint {
+    @apply mt-1 text-sm text-muted;
+  }
+  .panel {
+    @apply rounded-xl border border-line bg-surface;
+  }
+  .error-box {
+    @apply rounded-lg border border-stamp/30 bg-stamp-soft px-3 py-2 text-sm text-stamp;
+  }
+}
+
+/* Ballot mark: the one memorable element — options are marked like a paper ballot. */
+.ballot-option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  text-align: left;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.ballot-option:hover {
+  border-color: var(--color-brand);
+}
+.ballot-option[aria-checked='true'] {
+  border-color: var(--color-brand);
+  background: var(--color-brand-soft);
+}
+.ballot-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.ballot-box {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--color-brand);
+  background: var(--color-surface);
+  display: grid;
+  place-items: center;
+}
+.ballot-box.round {
+  border-radius: 999px;
+}
+.ballot-box.square {
+  border-radius: 6px;
+}
+.ballot-box svg {
+  width: 18px;
+  height: 18px;
+  stroke: var(--color-brand);
+  stroke-width: 3.2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 26;
+  stroke-dashoffset: 26;
+}
+.ballot-option[aria-checked='true'] .ballot-box svg {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.22s ease-out;
+}
+
+/* Receipt stub with perforated edge */
+.stub {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+}
+.stub-cut {
+  border-top: 2px dashed var(--color-line);
+  position: relative;
+}
+.stub-cut::before,
+.stub-cut::after {
+  content: '';
+  position: absolute;
+  top: -11px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+}
+.stub-cut::before {
+  left: -11px;
+  clip-path: inset(0 0 0 50%);
+}
+.stub-cut::after {
+  right: -11px;
+  clip-path: inset(0 50% 0 0);
+}
+
+.bar-fill {
+  transition: width 0.5s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ballot-box svg,
+  .bar-fill {
+    transition: none !important;
+  }
+}
