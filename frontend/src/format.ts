@@ -1,4 +1,4 @@
-import type { Kind, Status } from './api'
+import type { Kind, Option, Poll, Question, Status } from './api'
 
 const tz = 'Asia/Bangkok'
 
@@ -49,4 +49,45 @@ export function randomCitizenId(): string {
   let s = String(1 + Math.floor(Math.random() * 8))
   for (let i = 0; i < 11; i++) s += Math.floor(Math.random() * 10)
   return withCheckDigit(s)
+}
+
+// ---- approve-poll results ----
+
+export const YES = 'เห็นด้วย'
+export const NO = 'ไม่เห็นด้วย'
+export const ABSTAIN = 'งดออกเสียง'
+
+export interface Tally { yes: number; no: number; abstain: number }
+export type Verdict = 'เห็นด้วย' | 'ไม่เห็นด้วย' | 'เสมอ' | null
+
+/** Simple majority, abstentions not counted. null when nobody took a side. */
+export function verdict(t: Tally): Verdict {
+  if (t.yes + t.no === 0) return null
+  return t.yes > t.no ? YES : t.no > t.yes ? NO : 'เสมอ'
+}
+
+export function tallyOf(options: Option[]): Tally {
+  const t = { yes: 0, no: 0, abstain: 0 }
+  for (const o of options) {
+    if (o.label === YES) t.yes += o.count
+    else if (o.label === NO) t.no += o.count
+    else if (o.label === ABSTAIN) t.abstain += o.count
+  }
+  return t
+}
+
+/** Per-question tallies plus the overall one (all questions pooled) for an approve poll. */
+export function approveSummary(poll: Pick<Poll, 'questions' | 'options'>) {
+  const rows = poll.questions.map((q: Question) => ({
+    question: q,
+    options: poll.options.filter((o) => o.question_id === q.id),
+    tally: tallyOf(poll.options.filter((o) => o.question_id === q.id)),
+  }))
+  const overall = tallyOf(poll.options)
+  return { rows, overall, verdict: verdict(overall) }
+}
+
+/** Text content of sanitized HTML, for list previews. DOMParser never runs scripts. */
+export function plainText(html: string): string {
+  return new DOMParser().parseFromString(html, 'text/html').body.textContent?.replace(/\s+/g, ' ').trim() ?? ''
 }

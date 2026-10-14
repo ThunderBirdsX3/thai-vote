@@ -108,9 +108,9 @@ func (a *app) handleVote(w http.ResponseWriter, r *http.Request) error {
 		// Lock the poll row: serializes votes per poll so seq/prev_hash stay consistent.
 		var kind, status string
 		var maxChoices int
-		var anonymous bool
-		err := tx.QueryRow(ctx, `SELECT p.kind, p.max_choices, p.anonymous, `+statusSQL+`
-			FROM polls p WHERE p.id=$1 AND p.published_at IS NOT NULL FOR UPDATE`, pollID).Scan(&kind, &maxChoices, &anonymous, &status)
+		var anonymous, allowComment bool
+		err := tx.QueryRow(ctx, `SELECT p.kind, p.max_choices, p.anonymous, p.allow_comment, `+statusSQL+`
+			FROM polls p WHERE p.id=$1 AND p.published_at IS NOT NULL FOR UPDATE`, pollID).Scan(&kind, &maxChoices, &anonymous, &allowComment, &status)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return notFound("poll not found")
 		}
@@ -133,10 +133,18 @@ func (a *app) handleVote(w http.ResponseWriter, r *http.Request) error {
 				return bad("comment must be 1-2000 characters")
 			}
 		} else {
-			if in.Comment != "" {
+			if in.Comment != "" && !allowComment {
 				return bad("this poll does not accept a comment")
 			}
-			if len(in.OptionIDs) < 1 || len(in.OptionIDs) > maxChoices {
+			if runes(in.Comment) > 2000 {
+				return bad("comment must be at most 2000 characters")
+			}
+			if kind == "approve" {
+				// maxChoices is the number of questions: every one must be answered exactly once
+				if len(in.OptionIDs) != maxChoices {
+					return bad(fmt.Sprintf("answer all %d questions", maxChoices))
+				}
+			} else if len(in.OptionIDs) < 1 || len(in.OptionIDs) > maxChoices {
 				return bad(fmt.Sprintf("choose between 1 and %d options", maxChoices))
 			}
 			seen := map[string]bool{}
@@ -154,6 +162,16 @@ func (a *app) handleVote(w http.ResponseWriter, r *http.Request) error {
 			}
 			if valid != len(in.OptionIDs) {
 				return bad("option does not belong to this poll")
+			}
+			if kind == "approve" {
+				var answered int
+				if err := tx.QueryRow(ctx, `SELECT count(DISTINCT question_id) FROM poll_options WHERE poll_id=$1 AND id = ANY($2::uuid[])`,
+					pollID, in.OptionIDs).Scan(&answered); err != nil {
+					return err
+				}
+				if answered != maxChoices {
+					return bad("answer each question exactly once")
+				}
 			}
 		}
 
@@ -241,9 +259,10 @@ func (a *app) handleReceipt(w http.ResponseWriter, r *http.Request) error {
 // ---- results ----
 
 type optionResult struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Count int    `json:"count"`
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	QuestionID string `json:"question_id,omitempty"`
+	Count      int    `json:"count"`
 }
 
 type ballotOut struct {
@@ -266,16 +285,16 @@ type resultsOut struct {
 func (a *app) buildResults(ctx context.Context, p pollOut, admin bool) (resultsOut, error) {
 	out := resultsOut{Poll: p, Total: p.BallotCount, Options: []optionResult{}, Ballots: []ballotOut{}}
 
-	orows, err := a.db.Query(ctx, `SELECT o.id::text, o.label, count(bc.ballot_id)
+	orows, err := a.db.Query(ctx, `SELECT o.id::text, o.label, coalesce(o.question_id::text, ''), count(bc.ballot_id)
 		FROM poll_options o LEFT JOIN ballot_choices bc ON bc.option_id=o.id
-		WHERE o.poll_id=$1 GROUP BY o.id, o.label, o.position ORDER BY o.position`, p.ID)
+		WHERE o.poll_id=$1 GROUP BY o.id ORDER BY o.position`, p.ID)
 	if err != nil {
 		return out, err
 	}
 	defer orows.Close()
 	for orows.Next() {
 		var o optionResult
-		if err := orows.Scan(&o.ID, &o.Label, &o.Count); err != nil {
+		if err := orows.Scan(&o.ID, &o.Label, &o.QuestionID, &o.Count); err != nil {
 			return out, err
 		}
 		out.Options = append(out.Options, o)
@@ -287,12 +306,14 @@ func (a *app) buildResults(ctx context.Context, p pollOut, admin bool) (resultsO
 	// ponytail: loads every ballot; paginate if polls reach tens of thousands of ballots.
 	brows, err := a.db.Query(ctx, `
 		SELECT b.id::text, v.display_name, b.comment,
-		       coalesce(array_agg(o.label ORDER BY o.position) FILTER (WHERE o.id IS NOT NULL), '{}'),
+		       coalesce(array_agg(CASE WHEN q.label <> '' THEN q.label || ': ' || o.label ELSE o.label END ORDER BY o.position)
+		                FILTER (WHERE o.id IS NOT NULL), '{}'),
 		       h.ballot_id IS NOT NULL, coalesce(h.reason, '')
 		FROM ballots b
 		LEFT JOIN voters v ON v.id=b.voter_id
 		LEFT JOIN ballot_choices bc ON bc.ballot_id=b.id
 		LEFT JOIN poll_options o ON o.id=bc.option_id
+		LEFT JOIN poll_questions q ON q.id=o.question_id
 		LEFT JOIN comment_hidden h ON h.ballot_id=b.id
 		WHERE b.poll_id=$1
 		GROUP BY b.id, b.seq, v.display_name, b.comment, h.ballot_id, h.reason
@@ -352,7 +373,7 @@ func (a *app) handlePublicResults(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
-	if p.Status == "upcoming" || (p.Status == "open" && p.ResultsVisibility == "after_close") {
+	if !p.ResultsVisible {
 		return forbid("results are not available yet")
 	}
 	res, err := a.buildResults(r.Context(), p, false)
@@ -368,7 +389,7 @@ func (a *app) handleAdminResults(w http.ResponseWriter, r *http.Request, _ strin
 	if err != nil {
 		return err
 	}
-	polls, err := a.loadPolls(r.Context(), `WHERE p.id=$1`, "", id)
+	polls, err := a.loadPolls(r.Context(), `WHERE p.id=$1`, "", true, id)
 	if err != nil {
 		return err
 	}

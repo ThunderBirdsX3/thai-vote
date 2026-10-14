@@ -21,12 +21,19 @@ export const api = {
   post: <T>(p: string, b?: unknown) => req<T>('POST', p, b ?? {}),
   put: <T>(p: string, b: unknown) => req<T>('PUT', p, b),
   del: <T>(p: string) => req<T>('DELETE', p),
+  // raw body upload (promo image); the server sniffs the real type
+  upload: async (p: string, file: Blob) => {
+    const res = await fetch('/api' + p, { method: 'PUT', credentials: 'same-origin', body: file })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new ApiError(res.status, data.error ?? 'เกิดข้อผิดพลาด')
+  },
 }
 
 export type Kind = 'single' | 'multi' | 'approve' | 'comment'
 export type Status = 'draft' | 'upcoming' | 'open' | 'closed'
 
-export interface Option { id: string; label: string }
+export interface Option { id: string; label: string; question_id?: string; count: number }
+export interface Question { id: string; label: string }
 export interface Poll {
   id: string
   title: string
@@ -40,11 +47,15 @@ export interface Poll {
   published_at: string | null
   closed_at: string | null
   status: Status
+  allow_comment: boolean
+  questions: Question[]
   options: Option[]
+  image_url: string
+  results_visible: boolean
   has_voted: boolean
   ballot_count: number
 }
-export interface OptionResult extends Option { count: number }
+export type OptionResult = Option
 export interface BallotOut {
   id?: string
   name: string | null
@@ -77,5 +88,7 @@ export interface PollInput {
   results_visibility: 'live' | 'after_close'
   starts_at: string
   ends_at: string
+  allow_comment: boolean
+  questions: string[]
   options: string[]
 }

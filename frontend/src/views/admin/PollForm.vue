@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Kind, type Poll, type PollInput } from '../../api'
 import { fromLocalInput, kindLabel, toLocalInput } from '../../format'
+import RichEditor from '../../components/RichEditor.vue'
 
 const props = defineProps<{ id?: string }>()
 const router = useRouter()
@@ -12,18 +13,46 @@ now.setMinutes(0, 0, 0)
 const form = ref({
   title: '',
   description: '',
-  kind: 'single' as Kind,
+  kind: 'approve' as Kind,
   max_choices: 2,
   anonymous: true,
   results_visibility: 'after_close' as 'live' | 'after_close',
   starts_at: toLocalInput(new Date(now.getTime() + 3600_000).toISOString()),
   ends_at: toLocalInput(new Date(now.getTime() + 7 * 86400_000).toISOString()),
+  allow_comment: false,
+  questions: [''],
   options: ['', ''],
 })
 const loading = ref(!!props.id)
 const busy = ref(false)
 const error = ref('')
 const locked = ref(false)
+
+// promo image: optional; uploaded after the poll itself is saved
+const MAX_IMAGE = 2 * 1024 * 1024
+const imageFile = ref<File | null>(null)
+const imageUrl = ref('') // what the form currently shows (existing or newly picked)
+const hadImage = ref(false)
+const imageError = ref('')
+
+function pickImage(ev: Event) {
+  const f = (ev.target as HTMLInputElement).files?.[0]
+  imageError.value = ''
+  if (!f) return
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(f.type)) imageError.value = 'ใช้ไฟล์ JPG, PNG หรือ WebP เท่านั้น'
+  else if (f.size > MAX_IMAGE) imageError.value = 'ไฟล์ใหญ่เกิน 2 MB'
+  else {
+    if (imageUrl.value.startsWith('blob:')) URL.revokeObjectURL(imageUrl.value)
+    imageFile.value = f
+    imageUrl.value = URL.createObjectURL(f)
+  }
+  ;(ev.target as HTMLInputElement).value = ''
+}
+function clearImage() {
+  if (imageUrl.value.startsWith('blob:')) URL.revokeObjectURL(imageUrl.value)
+  imageFile.value = null
+  imageUrl.value = ''
+}
 
 onMounted(async () => {
   if (!props.id) return
@@ -39,8 +68,12 @@ onMounted(async () => {
       results_visibility: p.results_visibility,
       starts_at: toLocalInput(p.starts_at),
       ends_at: toLocalInput(p.ends_at),
+      allow_comment: p.allow_comment,
+      questions: p.kind === 'approve' && p.questions.length ? p.questions.map((q) => q.label) : [''],
       options: p.kind === 'approve' || p.kind === 'comment' ? ['', ''] : p.options.map((o) => o.label),
     }
+    imageUrl.value = p.image_url
+    hadImage.value = !!p.image_url
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -52,6 +85,7 @@ const kinds: Kind[] = ['single', 'multi', 'approve', 'comment']
 const needsOptions = () => form.value.kind === 'single' || form.value.kind === 'multi'
 
 async function save() {
+  if (imageError.value) return
   busy.value = true
   error.value = ''
   const f = form.value
@@ -64,12 +98,16 @@ async function save() {
     results_visibility: f.results_visibility,
     starts_at: fromLocalInput(f.starts_at),
     ends_at: fromLocalInput(f.ends_at),
+    allow_comment: f.kind !== 'comment' && f.allow_comment,
+    questions: f.kind === 'approve' ? f.questions.map((q) => q.trim()).filter(Boolean) : [],
     options: needsOptions() ? f.options.map((o) => o.trim()).filter(Boolean) : [],
   }
   try {
     const r = props.id
       ? await api.put<{ id: string }>(`/admin/polls/${props.id}`, body)
       : await api.post<{ id: string }>('/admin/polls', body)
+    if (imageFile.value) await api.upload(`/admin/polls/${r.id}/image`, imageFile.value)
+    else if (hadImage.value && !imageUrl.value) await api.del(`/admin/polls/${r.id}/image`)
     router.push(`/admin/polls/${r.id}`)
   } catch (e) {
     error.value = (e as Error).message
@@ -92,8 +130,19 @@ async function save() {
           <input id="t" v-model="form.title" class="field" maxlength="200" required />
         </div>
         <div>
-          <label class="label" for="d">รายละเอียด</label>
-          <textarea id="d" v-model="form.description" class="field min-h-28" maxlength="5000"></textarea>
+          <span class="label">รายละเอียดโครงการ</span>
+          <RichEditor v-model="form.description" />
+          <p class="hint">ตัวหนา หัวข้อ รายการ และลิงก์ได้ ระบบไม่รับไฟล์แนบ หากมีเอกสารให้แปะลิงก์ไปยังไฟล์</p>
+        </div>
+        <div>
+          <span class="label">รูปโปรโมต (ไม่บังคับ)</span>
+          <div v-if="imageUrl" class="mb-2 flex items-start gap-3">
+            <img :src="imageUrl" alt="ตัวอย่างรูปโปรโมต" class="max-h-40 rounded-lg border border-line object-cover" />
+            <button type="button" class="btn btn-ghost" @click="clearImage">ลบรูป</button>
+          </div>
+          <input type="file" accept="image/jpeg,image/png,image/webp" class="field" aria-label="เลือกรูปโปรโมต" @change="pickImage" />
+          <p class="hint">JPG, PNG หรือ WebP ไม่เกิน 2 MB</p>
+          <p v-if="imageError" class="error-box mt-2" role="alert">{{ imageError }}</p>
         </div>
       </section>
 
@@ -105,9 +154,26 @@ async function save() {
               <input v-model="form.kind" type="radio" :value="k" class="accent-[var(--color-brand)]" /> {{ kindLabel[k] }}
             </label>
           </div>
-          <p v-if="form.kind === 'approve'" class="hint">ตัวเลือกคือ เห็นด้วย / ไม่เห็นด้วย / งดออกเสียง</p>
+          <p v-if="form.kind === 'approve'" class="hint">ตัวเลือกคือ เห็นด้วย / ไม่เห็นด้วย / งดออกเสียง ในแต่ละประเด็น</p>
           <p v-if="form.kind === 'comment'" class="hint">ผู้ใช้พิมพ์ความเห็นได้ 1 ครั้ง (ไม่เกิน 2,000 ตัวอักษร)</p>
         </div>
+
+        <div v-if="form.kind === 'approve'">
+          <span class="label">ประเด็นที่ขอความเห็น (ไม่เกิน 50 ข้อ)</span>
+          <div class="space-y-2">
+            <div v-for="(_, i) in form.questions" :key="i" class="flex gap-2">
+              <input v-model="form.questions[i]" class="field" maxlength="500" :aria-label="`ประเด็นที่ ${i + 1}`" :placeholder="`ประเด็นที่ ${i + 1} เช่น มาตรา ${i + 1}`" />
+              <button type="button" class="btn btn-ghost !px-3" :disabled="form.questions.length <= 1" aria-label="ลบประเด็น" @click="form.questions.splice(i, 1)">ลบ</button>
+            </div>
+          </div>
+          <button type="button" class="btn btn-ghost mt-2" :disabled="form.questions.length >= 50" @click="form.questions.push('')">เพิ่มประเด็น</button>
+          <p class="hint">ถ้ามีประเด็นเดียว เว้นว่างได้ ใช้หัวข้อของแบบโหวตเป็นคำถาม ผู้โหวตต้องตอบทุกประเด็น และระบบสรุปผลตามเสียงข้างมาก (ไม่นับงดออกเสียง)</p>
+        </div>
+
+        <label v-if="form.kind !== 'comment'" class="flex cursor-pointer items-start gap-3 rounded-lg border border-line p-3 has-[:checked]:border-brand has-[:checked]:bg-brand-soft">
+          <input v-model="form.allow_comment" type="checkbox" class="mt-1.5 accent-[var(--color-brand)]" />
+          <span><b>เปิดช่องความเห็นปิดท้าย</b><br /><span class="text-sm text-muted">ผู้โหวตพิมพ์ความเห็นเพิ่มเติมได้ ไม่บังคับ (ไม่เกิน 2,000 ตัวอักษร)</span></span>
+        </label>
 
         <div v-if="needsOptions()">
           <span class="label">ตัวเลือก (2–20 ข้อ)</span>

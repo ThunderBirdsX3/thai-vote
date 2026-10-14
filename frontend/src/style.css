@@ -174,3 +174,40 @@ h2 {
     transition: none !important;
   }
 }
+
+/* Admin-authored description (server-sanitized HTML) */
+.rich > * + * {
+  margin-top: 0.75em;
+}
+.rich h2 {
+  @apply text-xl font-bold text-ink;
+}
+.rich h3 {
+  @apply text-lg font-bold text-ink;
+}
+.rich ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.rich ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.rich blockquote {
+  border-left: 3px solid var(--color-line);
+  padding-left: 1em;
+}
+.rich a {
+  @apply text-brand underline;
+  overflow-wrap: anywhere;
+}
+
+/* Tiptap editing surface */
+.editor .ProseMirror {
+  min-height: 9rem;
+  outline: none;
+}
+.editor:focus-within {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px var(--color-brand-soft);
+}

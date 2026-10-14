@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/microcosm-cc/bluemonday"
 )
 
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -46,26 +48,43 @@ func (a *app) audit(ctx context.Context, adminID, action, target string, detail 
 // ---- poll model ----
 
 type optionOut struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	QuestionID string `json:"question_id,omitempty"`
+	Count      int    `json:"count"` // 0 unless results_visible
+}
+
+type questionOut struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 }
 
 type pollOut struct {
-	ID                string      `json:"id"`
-	Title             string      `json:"title"`
-	Description       string      `json:"description"`
-	Kind              string      `json:"kind"`
-	MaxChoices        int         `json:"max_choices"`
-	Anonymous         bool        `json:"anonymous"`
-	ResultsVisibility string      `json:"results_visibility"`
-	StartsAt          time.Time   `json:"starts_at"`
-	EndsAt            time.Time   `json:"ends_at"`
-	PublishedAt       *time.Time  `json:"published_at"`
-	ClosedAt          *time.Time  `json:"closed_at"`
-	Status            string      `json:"status"` // draft | upcoming | open | closed
-	Options           []optionOut `json:"options"`
-	HasVoted          bool        `json:"has_voted"`
-	BallotCount       int         `json:"ballot_count"`
+	ID                string        `json:"id"`
+	Title             string        `json:"title"`
+	Description       string        `json:"description"`
+	Kind              string        `json:"kind"`
+	MaxChoices        int           `json:"max_choices"`
+	Anonymous         bool          `json:"anonymous"`
+	ResultsVisibility string        `json:"results_visibility"`
+	StartsAt          time.Time     `json:"starts_at"`
+	EndsAt            time.Time     `json:"ends_at"`
+	PublishedAt       *time.Time    `json:"published_at"`
+	ClosedAt          *time.Time    `json:"closed_at"`
+	Status            string        `json:"status"` // draft | upcoming | open | closed
+	AllowComment      bool          `json:"allow_comment"`
+	Questions         []questionOut `json:"questions"`
+	Options           []optionOut   `json:"options"`
+	ImageURL          string        `json:"image_url"`
+	ResultsVisible    bool          `json:"results_visible"`
+	HasVoted          bool          `json:"has_voted"`
+	BallotCount       int           `json:"ballot_count"`
+	imageVer          int64
+}
+
+// resultsVisible reports whether voters may see tallies for a poll in this state.
+func resultsVisible(status, visibility string) bool {
+	return status == "closed" || (status == "open" && visibility == "live")
 }
 
 // statusSQL derives status from timestamps using the DB clock (single source of time).
@@ -75,10 +94,12 @@ const statusSQL = `CASE WHEN p.published_at IS NULL THEN 'draft'
 
 const pollCols = `p.id::text, p.title, p.description, p.kind, p.max_choices, p.anonymous, p.results_visibility,
 	p.starts_at, p.ends_at, p.published_at, p.closed_at, ` + statusSQL + `,
-	(SELECT count(*) FROM ballots b WHERE b.poll_id = p.id)`
+	(SELECT count(*) FROM ballots b WHERE b.poll_id = p.id), p.allow_comment,
+	coalesce((SELECT extract(epoch FROM i.updated_at)::bigint FROM poll_images i WHERE i.poll_id = p.id), 0)`
 
-// loadPolls runs `SELECT pollCols FROM polls p <where>` and attaches options and has_voted.
-func (a *app) loadPolls(ctx context.Context, where string, voterID string, args ...any) ([]pollOut, error) {
+// loadPolls runs `SELECT pollCols FROM polls p <where>` and attaches questions, options (with
+// tallies, only when the viewer may see results) and has_voted. This is the single gate for list/detail counts.
+func (a *app) loadPolls(ctx context.Context, where string, voterID string, admin bool, args ...any) ([]pollOut, error) {
 	rows, err := a.db.Query(ctx, `SELECT `+pollCols+` FROM polls p `+where, args...)
 	if err != nil {
 		return nil, err
@@ -90,9 +111,14 @@ func (a *app) loadPolls(ctx context.Context, where string, voterID string, args 
 	for rows.Next() {
 		var p pollOut
 		if err := rows.Scan(&p.ID, &p.Title, &p.Description, &p.Kind, &p.MaxChoices, &p.Anonymous, &p.ResultsVisibility,
-			&p.StartsAt, &p.EndsAt, &p.PublishedAt, &p.ClosedAt, &p.Status, &p.BallotCount); err != nil {
+			&p.StartsAt, &p.EndsAt, &p.PublishedAt, &p.ClosedAt, &p.Status, &p.BallotCount, &p.AllowComment, &p.imageVer); err != nil {
 			return nil, err
 		}
+		p.ResultsVisible = admin || resultsVisible(p.Status, p.ResultsVisibility)
+		if p.imageVer > 0 {
+			p.ImageURL = fmt.Sprintf("/api/polls/%s/image?v=%d", p.ID, p.imageVer)
+		}
+		p.Questions = []questionOut{}
 		p.Options = []optionOut{}
 		idx[p.ID] = len(polls)
 		ids = append(ids, p.ID)
@@ -101,7 +127,25 @@ func (a *app) loadPolls(ctx context.Context, where string, voterID string, args 
 	if err := rows.Err(); err != nil || len(ids) == 0 {
 		return polls, err
 	}
-	orows, err := a.db.Query(ctx, `SELECT id::text, poll_id::text, label FROM poll_options WHERE poll_id = ANY($1::uuid[]) ORDER BY position`, ids)
+	qrows, err := a.db.Query(ctx, `SELECT id::text, poll_id::text, label FROM poll_questions WHERE poll_id = ANY($1::uuid[]) ORDER BY position`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer qrows.Close()
+	for qrows.Next() {
+		var q questionOut
+		var pid string
+		if err := qrows.Scan(&q.ID, &pid, &q.Label); err != nil {
+			return nil, err
+		}
+		polls[idx[pid]].Questions = append(polls[idx[pid]].Questions, q)
+	}
+	if err := qrows.Err(); err != nil {
+		return nil, err
+	}
+	orows, err := a.db.Query(ctx, `SELECT o.id::text, o.poll_id::text, o.label, coalesce(o.question_id::text, ''), count(bc.ballot_id)
+		FROM poll_options o LEFT JOIN ballot_choices bc ON bc.option_id = o.id
+		WHERE o.poll_id = ANY($1::uuid[]) GROUP BY o.id ORDER BY o.position`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -109,8 +153,11 @@ func (a *app) loadPolls(ctx context.Context, where string, voterID string, args 
 	for orows.Next() {
 		var o optionOut
 		var pid string
-		if err := orows.Scan(&o.ID, &pid, &o.Label); err != nil {
+		if err := orows.Scan(&o.ID, &pid, &o.Label, &o.QuestionID, &o.Count); err != nil {
 			return nil, err
+		}
+		if !polls[idx[pid]].ResultsVisible {
+			o.Count = 0
 		}
 		polls[idx[pid]].Options = append(polls[idx[pid]].Options, o)
 	}
@@ -140,7 +187,7 @@ const orderSQL = ` ORDER BY CASE WHEN ` + statusSQL + ` = 'open' THEN 0 WHEN ` +
 // ---- voter-facing ----
 
 func (a *app) handleListPolls(w http.ResponseWriter, r *http.Request) error {
-	polls, err := a.loadPolls(r.Context(), `WHERE p.published_at IS NOT NULL`+orderSQL, a.voterID(r))
+	polls, err := a.loadPolls(r.Context(), `WHERE p.published_at IS NOT NULL`+orderSQL, a.voterID(r), false)
 	if err != nil {
 		return err
 	}
@@ -153,7 +200,7 @@ func (a *app) publishedPoll(r *http.Request) (pollOut, error) {
 	if err != nil {
 		return pollOut{}, err
 	}
-	polls, err := a.loadPolls(r.Context(), `WHERE p.id=$1 AND p.published_at IS NOT NULL`, a.voterID(r), id)
+	polls, err := a.loadPolls(r.Context(), `WHERE p.id=$1 AND p.published_at IS NOT NULL`, a.voterID(r), false, id)
 	if err != nil {
 		return pollOut{}, err
 	}
@@ -183,22 +230,41 @@ type pollIn struct {
 	ResultsVisibility string    `json:"results_visibility"`
 	StartsAt          time.Time `json:"starts_at"`
 	EndsAt            time.Time `json:"ends_at"`
+	AllowComment      bool      `json:"allow_comment"`
+	Questions         []string  `json:"questions"`
 	Options           []string  `json:"options"`
 }
 
 func runes(s string) int { return utf8.RuneCountInString(s) }
+
+// descPolicy limits the admin's rich-text description to basic formatting and links.
+// No images or attachments: files can't be embedded, only linked.
+var descPolicy = func() *bluemonday.Policy {
+	p := bluemonday.NewPolicy()
+	p.AllowElements("p", "br", "h2", "h3", "strong", "em", "u", "s", "ul", "ol", "li", "blockquote")
+	p.AllowAttrs("href").OnElements("a")
+	p.AllowURLSchemes("http", "https", "mailto")
+	p.RequireNoFollowOnLinks(true)
+	p.AddTargetBlankToFullyQualifiedLinks(true)
+	return p
+}()
+
+const maxDescriptionBytes = 50_000
 
 var approveLabels = []string{"เห็นด้วย", "ไม่เห็นด้วย", "งดออกเสียง"}
 
 // validatePoll normalises in-place and returns the option labels to store.
 func validatePoll(in *pollIn) ([]string, error) {
 	in.Title = strings.TrimSpace(in.Title)
-	in.Description = strings.TrimSpace(in.Description)
+	if len(in.Description) > 4*maxDescriptionBytes {
+		return nil, bad("description too long")
+	}
+	in.Description = strings.TrimSpace(descPolicy.Sanitize(in.Description))
 	if n := runes(in.Title); n < 1 || n > 200 {
 		return nil, bad("title must be 1-200 characters")
 	}
-	if runes(in.Description) > 5000 {
-		return nil, bad("description too long (max 5000)")
+	if len(in.Description) > maxDescriptionBytes {
+		return nil, bad("description too long")
 	}
 	if in.ResultsVisibility != "live" && in.ResultsVisibility != "after_close" {
 		return nil, bad("results_visibility must be live or after_close")
@@ -232,18 +298,57 @@ func validatePoll(in *pollIn) ([]string, error) {
 			return nil, bad("max_choices must be between 1 and number of options")
 		}
 	case "approve":
-		labels, in.MaxChoices = approveLabels, 1
+		qs := make([]string, 0, len(in.Questions))
+		for _, q := range in.Questions {
+			q = strings.TrimSpace(q)
+			if q == "" || runes(q) > 500 {
+				return nil, bad("each question must be 1-500 characters")
+			}
+			qs = append(qs, q)
+		}
+		if len(qs) > 50 {
+			return nil, bad("at most 50 questions")
+		}
+		if len(qs) == 0 {
+			qs = []string{""} // single implicit question: the poll title is the question
+		}
+		in.Questions, in.MaxChoices = qs, len(qs)
 	case "comment":
 		in.MaxChoices = 1
 	default:
 		return nil, bad("kind must be single, multi, approve or comment")
 	}
+	if in.Kind != "approve" {
+		in.Questions = nil
+	}
+	if in.Kind == "comment" {
+		in.AllowComment = false // the comment is already the whole ballot
+	}
 	return labels, nil
 }
 
-func insertOptions(ctx context.Context, tx pgx.Tx, pollID string, labels []string) error {
-	for i, l := range labels {
-		if _, err := tx.Exec(ctx, `INSERT INTO poll_options (poll_id, label, position) VALUES ($1,$2,$3)`, pollID, l, i); err != nil {
+// insertChoices stores a poll's options. For 'approve' polls each question gets
+// its own agree / disagree / abstain options.
+func insertChoices(ctx context.Context, tx pgx.Tx, pollID string, in pollIn, labels []string) error {
+	pos := 0
+	add := func(questionID any, label string) error {
+		_, err := tx.Exec(ctx, `INSERT INTO poll_options (poll_id, question_id, label, position) VALUES ($1,$2,$3,$4)`, pollID, questionID, label, pos)
+		pos++
+		return err
+	}
+	for i, q := range in.Questions {
+		var qid string
+		if err := tx.QueryRow(ctx, `INSERT INTO poll_questions (poll_id, label, position) VALUES ($1,$2,$3) RETURNING id::text`, pollID, q, i).Scan(&qid); err != nil {
+			return err
+		}
+		for _, l := range approveLabels {
+			if err := add(qid, l); err != nil {
+				return err
+			}
+		}
+	}
+	for _, l := range labels {
+		if err := add(nil, l); err != nil {
 			return err
 		}
 	}
@@ -253,7 +358,7 @@ func insertOptions(ctx context.Context, tx pgx.Tx, pollID string, labels []strin
 // ---- admin handlers ----
 
 func (a *app) handleAdminListPolls(w http.ResponseWriter, r *http.Request, _ string) error {
-	polls, err := a.loadPolls(r.Context(), orderSQL, "")
+	polls, err := a.loadPolls(r.Context(), orderSQL, "", true)
 	if err != nil {
 		return err
 	}
@@ -266,7 +371,7 @@ func (a *app) handleAdminGetPoll(w http.ResponseWriter, r *http.Request, _ strin
 	if err != nil {
 		return err
 	}
-	polls, err := a.loadPolls(r.Context(), `WHERE p.id=$1`, "", id)
+	polls, err := a.loadPolls(r.Context(), `WHERE p.id=$1`, "", true, id)
 	if err != nil {
 		return err
 	}
@@ -294,12 +399,12 @@ func (a *app) handleAdminCreatePoll(w http.ResponseWriter, r *http.Request, admi
 	var id string
 	err = a.withTx(r.Context(), func(tx pgx.Tx) error {
 		if err := tx.QueryRow(r.Context(), `
-			INSERT INTO polls (title, description, kind, max_choices, anonymous, results_visibility, starts_at, ends_at, created_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id::text`,
-			in.Title, in.Description, in.Kind, in.MaxChoices, in.Anonymous, in.ResultsVisibility, in.StartsAt, in.EndsAt, adminID).Scan(&id); err != nil {
+			INSERT INTO polls (title, description, kind, max_choices, anonymous, results_visibility, starts_at, ends_at, allow_comment, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id::text`,
+			in.Title, in.Description, in.Kind, in.MaxChoices, in.Anonymous, in.ResultsVisibility, in.StartsAt, in.EndsAt, in.AllowComment, adminID).Scan(&id); err != nil {
 			return err
 		}
-		return insertOptions(r.Context(), tx, id, labels)
+		return insertChoices(r.Context(), tx, id, in, labels)
 	})
 	if err != nil {
 		return err
@@ -332,14 +437,17 @@ func (a *app) handleAdminUpdatePoll(w http.ResponseWriter, r *http.Request, admi
 		}
 		if _, err := tx.Exec(r.Context(), `
 			UPDATE polls SET title=$2, description=$3, kind=$4, max_choices=$5, anonymous=$6,
-			  results_visibility=$7, starts_at=$8, ends_at=$9, updated_at=now() WHERE id=$1`,
-			id, in.Title, in.Description, in.Kind, in.MaxChoices, in.Anonymous, in.ResultsVisibility, in.StartsAt, in.EndsAt); err != nil {
+			  results_visibility=$7, starts_at=$8, ends_at=$9, allow_comment=$10, updated_at=now() WHERE id=$1`,
+			id, in.Title, in.Description, in.Kind, in.MaxChoices, in.Anonymous, in.ResultsVisibility, in.StartsAt, in.EndsAt, in.AllowComment); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(r.Context(), `DELETE FROM poll_options WHERE poll_id=$1`, id); err != nil {
 			return err
 		}
-		return insertOptions(r.Context(), tx, id, labels)
+		if _, err := tx.Exec(r.Context(), `DELETE FROM poll_questions WHERE poll_id=$1`, id); err != nil {
+			return err
+		}
+		return insertChoices(r.Context(), tx, id, in, labels)
 	})
 	if err != nil {
 		return err

@@ -175,6 +175,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/polls/{id}", h(a.handleGetPoll))
 	mux.HandleFunc("POST /api/polls/{id}/vote", limit(a.voteLimit, h(a.handleVote)))
 	mux.HandleFunc("GET /api/polls/{id}/results", h(a.handlePublicResults))
+	mux.HandleFunc("GET /api/polls/{id}/image", h(a.handleImage))
 	mux.HandleFunc("GET /api/receipts/{code}", limit(a.voteLimit, h(a.handleReceipt)))
 
 	// admin
@@ -186,6 +187,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/admin/polls/{id}", h(a.adminOnly(a.handleAdminGetPoll)))
 	mux.HandleFunc("PUT /api/admin/polls/{id}", h(a.adminOnly(a.handleAdminUpdatePoll)))
 	mux.HandleFunc("DELETE /api/admin/polls/{id}", h(a.adminOnly(a.handleAdminDeletePoll)))
+	mux.HandleFunc("PUT /api/admin/polls/{id}/image", h(a.adminOnly(a.handleAdminSetImage)))
+	mux.HandleFunc("DELETE /api/admin/polls/{id}/image", h(a.adminOnly(a.handleAdminDeleteImage)))
 	mux.HandleFunc("POST /api/admin/polls/{id}/publish", h(a.adminOnly(a.handleAdminPublish)))
 	mux.HandleFunc("POST /api/admin/polls/{id}/close", h(a.adminOnly(a.handleAdminClose)))
 	mux.HandleFunc("GET /api/admin/polls/{id}/results", h(a.adminOnly(a.handleAdminResults)))

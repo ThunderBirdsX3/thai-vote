@@ -5,6 +5,7 @@ import { api, type Results, type Verify } from '../../api'
 import { fmtDate, kindLabel } from '../../format'
 import StatusBadge from '../../components/StatusBadge.vue'
 import ResultBars from '../../components/ResultBars.vue'
+import ApproveResults from '../../components/ApproveResults.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
@@ -85,7 +86,8 @@ const hide = (ballotId: string) =>
       </div>
     </header>
 
-    <p v-if="poll.description" class="mt-4 max-w-2xl whitespace-pre-line text-muted">{{ poll.description }}</p>
+    <img v-if="poll.image_url" :src="poll.image_url" alt="รูปโปรโมต" class="mt-4 max-h-64 rounded-xl border border-line object-cover" />
+    <div v-if="poll.description" class="rich mt-4 max-w-2xl text-muted" v-html="poll.description"></div>
 
     <section v-if="poll.status !== 'draft'" class="panel mt-8 p-6">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -101,7 +103,8 @@ const hide = (ballotId: string) =>
       </div>
 
       <div class="mt-6">
-        <ResultBars v-if="isChoice" :options="res.options" :total="res.total" :approve="poll.kind === 'approve'" />
+        <ApproveResults v-if="poll.kind === 'approve'" :poll="{ questions: poll.questions, options: res.options }" />
+        <ResultBars v-else-if="isChoice" :options="res.options" :total="res.total" />
         <ul v-if="res.ballots.length" class="mt-6 divide-y divide-line">
           <li v-for="b in res.ballots" :key="b.id" class="py-3 text-[15px]">
             <div v-if="b.name" class="font-medium">{{ b.name }}<span v-if="isChoice" class="font-normal text-muted"> เลือก {{ b.choices.join(', ') }}</span></div>
